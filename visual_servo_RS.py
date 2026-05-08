@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 from geometry_msgs.msg import TwistStamped
 from cv_bridge import CvBridge
 import cv2
+import numpy as np
 from ultralytics import YOLO
 import math
 
@@ -12,10 +13,12 @@ class VisualServoNode(Node):
     def __init__(self):
         super().__init__('visual_servo_node')
         
-        # 1. 리얼센스 전용 토픽 구독 
+        # 1. 리얼센스 전용 토픽 구독
+        # color는 compressed(JPEG)로 받아 대역폭/버퍼링 절감, depth는 raw 유지
         self.color_sub = self.create_subscription(
-            Image, '/camera/camera/color/image_raw', self.color_callback, 10)
-        
+            CompressedImage, '/camera/camera/color/image_raw/compressed',
+            self.color_callback, 10)
+
         self.depth_sub = self.create_subscription(
             Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
         
@@ -28,6 +31,10 @@ class VisualServoNode(Node):
         # 제어 게인값 (선속도 전용)
         self.kp_linear = 0.0015
         self.target_object = 'mouse'
+
+        # 안전 한계 (m/s) — 이 값 넘으면 servo가 singularity로 들어가 NaN 발생
+        self.max_linear = 0.08
+        self.search_radius_max = 0.04
         
         self.cv_depth_image = None 
         
@@ -43,7 +50,12 @@ class VisualServoNode(Node):
         self.state = 'SEARCHING' # 초기 상태: 탐색
         self.miss_count = 0
         self.search_angle = 0.0
-        self.search_radius = 0.01 
+        self.search_radius = 0.01
+
+        # servo가 첫 callback 직후엔 IK 준비 안 돼 NaN을 뱉을 수 있어
+        # 처음 N프레임은 publish를 건너뛴다 (warmup)
+        self.warmup_frames = 10
+        self.frame_count = 0
         
         self.get_logger().info("RealSense D455 비주얼 서보잉...")
 
@@ -51,7 +63,11 @@ class VisualServoNode(Node):
         self.cv_depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="16UC1")
         
     def color_callback(self, msg):
-        cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        # CompressedImage(JPEG) → OpenCV BGR
+        np_arr = np.frombuffer(msg.data, dtype=np.uint8)
+        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if cv_image is None:
+            return
         height, width = cv_image.shape[:2]
         cx, cy = width // 2, height // 2
 
@@ -99,7 +115,7 @@ class VisualServoNode(Node):
             else:
                 # 손목은 고정하고, 상하좌우(X, Y)로 평행하게 둥글게 원을 그리며 탐색
                 self.search_angle += 0.1
-                self.search_radius += 0.0005 
+                self.search_radius = min(self.search_radius + 0.0005, self.search_radius_max)
                 cmd_msg.twist.linear.x = self.search_radius * math.cos(self.search_angle)
                 cmd_msg.twist.linear.y = self.search_radius * math.sin(self.search_angle)
                 cv2.putText(cv_image, "Mode: SEARCHING", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
@@ -137,7 +153,24 @@ class VisualServoNode(Node):
             
             cv2.putText(cv_image, "Mode: BLIND DROP...", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
 
-        self.publisher_.publish(cmd_msg)
+        # warmup: 처음 몇 프레임은 publish 건너뛰기 (servo 초기화 시간 확보)
+        self.frame_count += 1
+        if self.frame_count <= self.warmup_frames:
+            cv2.putText(cv_image, f"Warmup {self.frame_count}/{self.warmup_frames}",
+                        (50, height - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+        else:
+            # 안전 가드: NaN/Inf 검사 + max_linear로 clip
+            lin = cmd_msg.twist.linear
+            ang = cmd_msg.twist.angular
+            vals = [lin.x, lin.y, lin.z, ang.x, ang.y, ang.z]
+            if not all(np.isfinite(v) for v in vals):
+                self.get_logger().warn(f"Non-finite cmd 차단: {vals}")
+            else:
+                lin.x = float(np.clip(lin.x, -self.max_linear, self.max_linear))
+                lin.y = float(np.clip(lin.y, -self.max_linear, self.max_linear))
+                lin.z = float(np.clip(lin.z, -self.max_linear, self.max_linear))
+                self.publisher_.publish(cmd_msg)
+
         cv2.imshow("RealSense VLA", cv_image)
         cv2.waitKey(1)
 
