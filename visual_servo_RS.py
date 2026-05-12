@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage
 from geometry_msgs.msg import TwistStamped
+from std_msgs.msg import String
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -102,6 +103,8 @@ class VisualServoNode(Node):
             self.miss_count += 1
             if self.miss_count > 30 and self.state == 'SERVOING':
                 self.state = 'SEARCHING'
+                self.search_angle = 0.0
+                self.search_radius = 0.01
                 self.get_logger().warn("타겟 상실... 나선형 탐색 시작")
 
         
@@ -113,11 +116,14 @@ class VisualServoNode(Node):
                 self.state = 'SERVOING'
                 self.get_logger().info("타겟 포착... 추적 시작")
             else:
-                # 손목은 고정하고, 상하좌우(X, Y)로 평행하게 둥글게 원을 그리며 탐색
-                self.search_angle += 0.1
-                self.search_radius = min(self.search_radius + 0.0005, self.search_radius_max)
-                cmd_msg.twist.linear.x = self.search_radius * math.cos(self.search_angle)
-                cmd_msg.twist.linear.y = self.search_radius * math.sin(self.search_angle)
+                # 나선형 궤적을 그리려면 위치(R·cosθ)가 아닌 속도(미분값)를 보내야 함
+                # 원 위치: x=R·cos(ωt), y=R·sin(ωt)
+                # 필요한 속도: vx=-R·ω·sin(ωt), vy=R·ω·cos(ωt)
+                omega = 1.5  # rad/s  (R_max·ω = 0.04·1.5 = 0.06 m/s < max_linear=0.08)
+                self.search_angle += omega / 30.0   # 약 30fps 기준
+                self.search_radius = min(self.search_radius + 0.0003, self.search_radius_max)
+                cmd_msg.twist.linear.x = -self.search_radius * omega * math.sin(self.search_angle)
+                cmd_msg.twist.linear.y =  self.search_radius * omega * math.cos(self.search_angle)
                 cv2.putText(cv_image, "Mode: SEARCHING", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
 
         # [상태 2] 추적 모드 (Visual Servoing)
@@ -126,8 +132,8 @@ class VisualServoNode(Node):
             error_y = self.last_by - cy
             
             # 오차를 각속도가 아닌 선속도(Linear)에 곱해서 평행 이동
-            cmd_msg.twist.linear.x = -float(error_x) * self.kp_linear
-            cmd_msg.twist.linear.y = float(error_y) * self.kp_linear
+            cmd_msg.twist.linear.x = float(error_x) * self.kp_linear
+            cmd_msg.twist.linear.y = -float(error_y) * self.kp_linear
             
             cv2.rectangle(cv_image, (self.last_x1, self.last_y1), (self.last_x2, self.last_y2), (0, 255, 0), 2)
             cv2.line(cv_image, (cx, cy), (self.last_bx, self.last_by), (0, 255, 255), 2)
