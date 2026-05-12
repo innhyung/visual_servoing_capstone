@@ -8,13 +8,27 @@ note -- servo_node가 내부적으로 Twist 명령을 미세한 Position 값으�
 
 ## 빠른 실행 (통합 런치)
 
-터미널 6개를 하나로 합친 런치 파일:
+터미널 6개를 `launch_all.py` 하나로 합쳤습니다:
 
     ros2 launch ~/ros2_ws_cap/src/visual_servoing_capstone/launch_all.py
 
-자동 실행 순서: UR 드라이버(+Play) → RealSense → MoveIt+Servo → 컨트롤러 활성화 → TWIST 모드 → visual_servo_RS.py
+### 자동 실행 타임라인
 
-> 타이밍 문제 시 `launch_all.py` 안의 `TimerAction period` 값을 조정하세요.
+| 시간 | 동작 |
+|------|------|
+| t = 0s | UR 드라이버 시작 (pre-flight 체크 + 좀비 정리) |
+| t = 0s | RealSense D455 시작 (병렬) |
+| t = 0.6s | 티칭 펜던트 Play 명령 자동 전송 |
+| t = 5s | MoveIt + servo_node 시작 |
+| t = 12s | forward_position_controller 활성화 |
+| t = 14s | servo TWIST 모드 전환 (command_type: 1) |
+| t = 17s | visual_servo_RS.py 시작 |
+
+### 주의사항
+
+- **Remote Control 모드가 아닌 경우**: t=0.6s 자동 Play가 실패할 수 있음 → 터미널에 `controller_manager: 500 Hz` 뜨면 즉시 ▶ Play 클릭
+- **타이밍 조정**: 컴퓨터 속도에 따라 MoveIt 로딩이 느리면 `launch_all.py`의 `moveit` TimerAction `period`를 8~10으로 늘리세요
+- **voice_target.py 미포함**: 음성 명령 기능은 별도 터미널에서 수동 실행
 
 ---
 
@@ -139,6 +153,7 @@ ros2 topic echo /target_object
 - 이유: hardware interface configuration timeout이 1초라 수동 Play가 불가능했음
 
 ### 새 파일
+- `launch_all.py` — 터미널 6개를 하나로 합친 통합 런치 파일 (위 섹션 참고)
 - `voice_target.py` — 음성 명령 → COCO 클래스 publish 노드 (위 섹션 참고)
 
 ### 알려진 이슈
