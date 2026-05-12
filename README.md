@@ -6,7 +6,19 @@ note -- servo_node가 내부적으로 Twist 명령을 미세한 Position 값으�
 
 ---
 
-## 실행 순서
+## 빠른 실행 (통합 런치)
+
+터미널 6개를 하나로 합친 런치 파일:
+
+    ros2 launch ~/ros2_ws_cap/src/visual_servoing_capstone/launch_all.py
+
+자동 실행 순서: UR 드라이버(+Play) → RealSense → MoveIt+Servo → 컨트롤러 활성화 → TWIST 모드 → visual_servo_RS.py
+
+> 타이밍 문제 시 `launch_all.py` 안의 `TimerAction period` 값을 조정하세요.
+
+---
+
+## 수동 실행 순서 (단계별)
 
 Terminal 1 - start_ur3.sh 실행 (pre-flight 체크 + 드라이버 + 자동 Play)
 
